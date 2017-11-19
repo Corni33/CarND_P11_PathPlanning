@@ -1,3 +1,6 @@
 [submodule "lib/splinter"]
 	path = lib/splinter
 	url = https://github.com/bgrimstad/splinter.git
+[submodule "lib/tinyspline"]
+	path = lib/tinyspline
+	url = https://github.com/msteinbeck/tinyspline.git
