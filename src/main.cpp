@@ -195,10 +195,10 @@ int get_lane_index(double d)
 
 double IDM_acc(double dist, double v_ego, double v_front)
 {
-	const double a = 2.0;
-	const double b = 5.0;
-	const double T = 1.2;
-	const double s0 = 5.0;
+	const double a = 3.0; // max acceleration
+	const double b = 6.0; // max deceleration
+	const double T = 0.8; // target time gap
+	const double s0 = 5.0; // minimal allowed distance to leading vehicle
 	const double v0 = 50*0.44704; // 50 mph target velocity
 
 	const double delta_v = v_ego - v_front;
@@ -208,7 +208,95 @@ double IDM_acc(double dist, double v_ego, double v_front)
 	double s_star = s0 + v_ego*T + v_ego*delta_v/(2.0*sqrt(a*b));
 	double acc = a*(1.0 - pow(v_ego/v0, delta) - pow(s_star/dist, 2));
 
+	if (acc < -b) acc = -b; // limit deceleration
+
 	return acc;
+}
+
+bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double ref_s, vector<vector<double>> sensor_fusion)
+{
+	// concept source: http://traffic-simulation.de/MOBIL.html
+
+	const double lon_safety_zone = 15.0;
+	const double acc_min_safe = -3.0;
+	const double p = 0.5; // politeness factor
+	const double acc_thresh = 0.3;
+	const double traffic_target_speed = 50*0.44704; // assume traffic wants to drive 50 mph
+
+	double acc_follower_tl_after_lc; // imposed acceleration of follower on target lane after lane change
+	double acc_follower_tl; // acceleration potential of follower on target lane without lane change
+	double acc_ego_after_lc; // ego acceleration potential after lane change
+
+	double veh_front_dist = 9999, veh_back_dist = 9999; 
+	double veh_front_vel, veh_back_vel;
+	int veh_front_id = -1, veh_back_id = -1;
+
+	for (auto traffic_obj : sensor_fusion)
+	{
+		int id = traffic_obj[0];
+		double vx = traffic_obj[3]; // in m/s
+		double vy = traffic_obj[4];
+		double s = traffic_obj[5];
+		double d = traffic_obj[6];	
+		double v_abs = sqrt(vx*vx + vy*vy); 						
+
+		if (get_lane_index(d) == target_lane)
+		{
+			// a traffic vehicle is inside the target lane safety zone -> lane change unsafe
+			if (s >= ref_s - lon_safety_zone && s <= ref_s + lon_safety_zone)						
+				return false;	
+			
+			if (s < ref_s - lon_safety_zone)  // traffic vehicle is behind safety zone
+			{						
+				double s_dist = ref_s - s;
+				if (s_dist < veh_back_dist)
+				{
+					veh_back_dist = s_dist;
+					veh_back_vel = v_abs;
+					veh_back_id = id;
+				}									
+			}			
+			else if (s > ref_s + lon_safety_zone) // traffic vehicle is in front of safety zone
+			{
+				double s_dist = s - ref_s;
+				if (s_dist < veh_front_dist)
+				{
+					veh_front_dist = s_dist;
+					veh_front_vel = v_abs;
+					veh_front_id = id;
+				}
+			}
+		}							
+	}
+
+	if (veh_front_id == -1 && veh_back_id == -1) // no relevant vehicle on target lane
+	{
+		acc_follower_tl_after_lc 	= 0.0;
+		acc_follower_tl 					= 0.0;
+		acc_ego_after_lc					= IDM_acc(9999, ego_speed, ego_speed);
+	}
+	else if (veh_front_id == -1) // no vehicle in front on target lane
+	{
+		acc_follower_tl_after_lc 	= IDM_acc(veh_back_dist, veh_back_vel, ego_speed);
+		acc_follower_tl 					= IDM_acc(9999, veh_back_vel, veh_back_vel);  
+		acc_ego_after_lc					= IDM_acc(9999, ego_speed, ego_speed);
+	}
+	else if (veh_back_id == -1) // no vehicle behind on target lane
+	{
+		acc_follower_tl_after_lc 	= 0.0;
+		acc_follower_tl 					= 0.0;
+		acc_ego_after_lc					= IDM_acc(veh_front_dist, ego_speed, veh_front_vel);
+	}
+
+	// evaluate safety criterion
+	if (acc_follower_tl_after_lc < acc_min_safe) 					
+		return false;	
+
+	// evaluate incentive criterion 
+	if (acc_ego_after_lc - ego_acc > p * (acc_follower_tl - acc_follower_tl_after_lc) + acc_thresh)
+		return true;
+	else	
+		return false;
 }
 
 
@@ -302,7 +390,7 @@ int main() {
 						auto sensor_fusion = j[1]["sensor_fusion"];
 						
 
-						const int n_path_points = 30; // number of path points
+						const int n_path_points = 20; // number of path points
 						const double dt = 0.02; // simulator step time
 						const double lane_width = 4.0;
 
@@ -331,7 +419,7 @@ int main() {
 							double dx = (double)previous_path_x[prev_size-1] - (double)previous_path_x[prev_size-2];
 							double dy = (double)previous_path_y[prev_size-1] - (double)previous_path_y[prev_size-2];
 							
-							ref_yaw = atan2(dy,dx);	
+							ref_yaw = atan2(-dy,dx);	
 							ref_speed = sqrt(dx*dx + dy*dy)/dt;
 
 							auto p0 = global2vehicle(ref_x - dx, ref_y - dy, ref_x, ref_y, ref_yaw);
@@ -361,19 +449,18 @@ int main() {
 							lp_y.push_back(p1[1]);
 						}
 
-						cout << "ref_yaw = " << ref_yaw << endl;
-						cout << "ref_x = " << ref_x << endl;
-						cout << "ref_s = " << ref_s << ", car_s = " << car_s <<  endl;
-						cout << "ref_speed = " << ref_speed << endl;			
+						//cout << "ref_yaw = " << ref_yaw << endl;
+						//cout << "ref_x = " << ref_x << endl;
+						//cout << "ref_s = " << ref_s << ", car_s = " << car_s <<  endl;
+						//cout << "ref_speed = " << ref_speed << endl;
 
-
-						//find out ego-vehicle lane
+						//find out current ego-vehicle lane
 						const int ego_lane_index = get_lane_index(ref_d);
 
-						double acc_ego = IDM_acc(9999, ref_speed, 0.0); 						
+						double acc_ego = IDM_acc(9999, ref_speed, ref_speed); 						
 
 						// handle detected traffic vehicles
-						/*for (auto traffic_obj : sensor_fusion)
+						for (auto traffic_obj : sensor_fusion)
 						{
 							int id = traffic_obj[0];
 							double px = traffic_obj[1];
@@ -385,15 +472,38 @@ int main() {
 
 							if (get_lane_index(d) == ego_lane_index)
 							{
-								if (s > car_s) //TODO: what about loop closing of the track?
+								if (s > ref_s) //TODO: what about loop closing of the track?
 								{
 									double v_traffic = sqrt(vx*vx + vy*vy); 
-									acc_ego = IDM_acc(s - car_s, car_speed, v_traffic);  
-								}
-							}
-							
-						}*/ 
+									double acc = IDM_acc(s - ref_s, ref_speed, v_traffic); 
 
+									if (acc < acc_ego) acc_ego = acc;									
+									//cout << "Traffic ahead: " << s - ref_s << " m" << endl;
+								}
+							}							
+						}
+
+						//decide lane change maneuver
+						int ego_target_lane = ego_lane_index;
+						if (ego_lane_index == 1) // left-most lane
+						{
+							if(check_lane_change(ref_speed, acc_ego, 2, ref_s, sensor_fusion))
+								ego_target_lane = 2;
+						}
+						else if (ego_lane_index == 2) // middle lane
+						{
+							if(check_lane_change(ref_speed, acc_ego, 1, ref_s, sensor_fusion))
+								ego_target_lane = 1;
+							else if (check_lane_change(ref_speed, acc_ego, 3, ref_s, sensor_fusion))
+								ego_target_lane = 3;
+						}
+						else if (ego_lane_index == 3) // right lane
+						{
+							if(check_lane_change(ref_speed, acc_ego, 2, ref_s, sensor_fusion))
+								ego_target_lane = 2;
+						}
+
+						//cout << "acc_ego = " << acc_ego << endl;
 						
 						//const int n_wp_behind = 2; 
 						const int n_wp_forward = 3;
@@ -401,23 +511,24 @@ int main() {
 
 						for (int k = 1; k <= n_wp_forward; ++k)
 						{
-							auto xy_global = getXY(ref_s + k*spacing, (ego_lane_index-1 + 0.5)*lane_width, map_waypoints_s, map_waypoints_x, map_waypoints_y);										
+							auto xy_global = getXY(ref_s + k*spacing, (ego_target_lane-1 + 0.5)*lane_width, map_waypoints_s, map_waypoints_x, map_waypoints_y);										
 							auto lane_point = global2vehicle(xy_global[0], xy_global[1], ref_x, ref_y, ref_yaw);
 							lp_x.push_back(lane_point[0]);
 							lp_y.push_back(lane_point[1]);
 						}					
 						
-						//for(p : lp_x) cout << p << ", " ;
-						//cout << endl;
+						/*cout << "lp_x: ";
+						for(p : lp_x) cout << p << ", " ;
+						cout << endl;*/
 
-						tk::spline lane_spline;
-						lane_spline.set_points(lp_x, lp_y);		
+						tk::spline path_spline;
+						path_spline.set_points(lp_x, lp_y);		
 
 
 						double v_ego = ref_speed;					
 						//acc_ego = 2.0;	
 
-						cout << "car_speed = " << car_speed << endl;
+						//cout << "car_speed = " << car_speed << endl;
 						
 						double x_path = 0.0;
 						double y_last = 0.0;
@@ -430,7 +541,7 @@ int main() {
 
 							// find a point on the spline that has distance ds from the last path point							
 							// initial approximation 
-							double y_path = lane_spline(x_path + ds);
+							double y_path = path_spline(x_path + ds);
 							
 							double dy = y_path - y_last;
 							double dst = sqrt(dy*dy + ds*ds);
@@ -438,7 +549,7 @@ int main() {
 
 							// improve approximation
 							x_path += ds*ratio;			
-							y_path = lane_spline(x_path);																												
+							y_path = path_spline(x_path);																												
 
 							auto xy_global = vehicle2global(x_path, y_path, ref_x, ref_y, ref_yaw);
 
@@ -447,22 +558,7 @@ int main() {
 
 							y_last = y_path;								
 						}
-
-						//weight with previous path
-						/*if (prev_size > 20)
-						{
-							int n_weight_points = 20;
-							for (int k=0; k < prev_size; ++k)
-							{
-								double w = max(0.0, 1.0 - (double)k/n_weight_points); // linear weighting
-
-								next_x_vals[k] = (1.0-w)*next_x_vals[k] + w*(double)previous_path_x[k];
-								next_y_vals[k] = (1.0-w)*next_y_vals[k] + w*(double)previous_path_y[k]; 
-							}
-						}*/
-
-						cout << "acc_ego = " << acc_ego << endl;
-
+						
 						/*cout << "previous_path_x: ";
 						for(double p : previous_path_x) cout << p << ", " ;
 						cout << endl;
