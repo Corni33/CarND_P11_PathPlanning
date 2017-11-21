@@ -20,6 +20,9 @@ using namespace std;
 // for convenience
 using json = nlohmann::json;
 
+// maximum s-value of the track
+double S_MAX;
+
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
@@ -193,13 +196,31 @@ int get_lane_index(double d)
 	return (int)(d/lane_width) + 1;
 }
 
+double s_distance(double s_ego, double s_target)
+{
+	bool ego_in_first_half 		= (s_ego < 0.5*S_MAX); // ? true : false;
+	bool target_in_first_half = (s_target < 0.5*S_MAX); // ? true : false;
+
+	if (ego_in_first_half && target_in_first_half) // both in first half of the track
+		return s_target - s_ego;
+
+	if (!ego_in_first_half && !target_in_first_half) // both in second half of the track
+		return s_target - s_ego;
+
+	if (ego_in_first_half && !target_in_first_half) // ego in first, target in second half of track
+		return s_target - S_MAX - s_ego;
+
+	if (!ego_in_first_half && target_in_first_half) // ego in second, target in first half of track
+		return s_target + S_MAX - s_ego;	
+} 
+
 double IDM_acc(double dist, double v_ego, double v_front)
 {
 	const double a = 3.0; // max acceleration
 	const double b = 6.0; // max deceleration
 	const double T = 0.8; // target time gap
-	const double s0 = 5.0; // minimal allowed distance to leading vehicle
-	const double v0 = 50*0.44704; // 50 mph target velocity
+	const double s0 = 7.0; // minimal allowed distance to leading vehicle
+	const double v0 = 48*0.44704; // 48 mph target velocity
 
 	const double delta_v = v_ego - v_front;
 
@@ -213,15 +234,14 @@ double IDM_acc(double dist, double v_ego, double v_front)
 	return acc;
 }
 
-bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double ref_s, vector<vector<double>> sensor_fusion)
+bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double ego_s, vector<vector<double>> sensor_fusion, double acc_bias)
 {
 	// concept source: http://traffic-simulation.de/MOBIL.html
 
-	const double lon_safety_zone = 15.0;
+	const double lon_safety_zone = 10.0; 
 	const double acc_min_safe = -3.0;
-	const double p = 0.5; // politeness factor
-	const double acc_thresh = 0.3;
-	const double traffic_target_speed = 50*0.44704; // assume traffic wants to drive 50 mph
+	const double p = 0.0; // 0.3 // politeness factor
+	const double acc_thresh = 0.5;
 
 	double acc_follower_tl_after_lc; // imposed acceleration of follower on target lane after lane change
 	double acc_follower_tl; // acceleration potential of follower on target lane without lane change
@@ -243,12 +263,13 @@ bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double
 		if (get_lane_index(d) == target_lane)
 		{
 			// a traffic vehicle is inside the target lane safety zone -> lane change unsafe
-			if (s >= ref_s - lon_safety_zone && s <= ref_s + lon_safety_zone)						
+			double dist_on_tl = s_distance(ego_s, s);
+			if (fabs(dist_on_tl) < lon_safety_zone)						
 				return false;	
 			
-			if (s < ref_s - lon_safety_zone)  // traffic vehicle is behind safety zone
+			if (s < ego_s - lon_safety_zone)  // traffic vehicle is behind safety zone
 			{						
-				double s_dist = ref_s - s;
+				double s_dist = ego_s - s;
 				if (s_dist < veh_back_dist)
 				{
 					veh_back_dist = s_dist;
@@ -256,9 +277,9 @@ bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double
 					veh_back_id = id;
 				}									
 			}			
-			else if (s > ref_s + lon_safety_zone) // traffic vehicle is in front of safety zone
+			else if (s > ego_s + lon_safety_zone) // traffic vehicle is in front of safety zone
 			{
-				double s_dist = s - ref_s;
+				double s_dist = s - ego_s;
 				if (s_dist < veh_front_dist)
 				{
 					veh_front_dist = s_dist;
@@ -293,11 +314,35 @@ bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double
 		return false;	
 
 	// evaluate incentive criterion 
-	if (acc_ego_after_lc - ego_acc > p * (acc_follower_tl - acc_follower_tl_after_lc) + acc_thresh)
+	if (acc_ego_after_lc - ego_acc + acc_bias > p * (acc_follower_tl - acc_follower_tl_after_lc) + acc_thresh)
 		return true;
 	else	
 		return false;
 }
+
+vector<double> walk_along_spline(tk::spline spl, double ds, double x_last, double y_last)
+{
+	// find a point on the spline spl that has euclidean distance ds 
+	// from the spline point (x_last, y_last)
+
+	const int n_iter = 4; // TODO more iterations -> slower max speed
+
+	double x, y, dy, ratio, dst;
+	double dx = ds;
+
+	y = spl(x_last + dx);
+
+	for (int i = 0; i < n_iter; ++i)
+	{		
+		dy = y - y_last;
+		dst = sqrt(dy*dy + dx*dx);
+		ratio = ds/dst; // dx/dst
+		dx *= ratio;
+		y = spl(x_last + dx);
+	}	
+	
+	return {x_last + dx, y};
+}						
 
 
 int main() {
@@ -338,18 +383,24 @@ int main() {
 	}	
 
 	// close waypoint loop -> first point = last point	
-	//int n_waypoints = map_waypoints_x.size();
-	//double dist = distance(map_waypoints_x[n_waypoints-1], map_waypoints_y[n_waypoints-1], map_waypoints_x[0], map_waypoints_y[0]);
+	int n_waypoints = map_waypoints_x.size();
+	double dist = distance(map_waypoints_x[n_waypoints-1], map_waypoints_y[n_waypoints-1], map_waypoints_x[0], map_waypoints_y[0]);
 
-	//map_waypoints_x.push_back(map_waypoints_x[0]);
-	//map_waypoints_y.push_back(map_waypoints_y[0]);	
-	//map_waypoints_s.push_back(map_waypoints_s[n_waypoints-1] + dist);
-	//map_waypoints_dx.push_back(d_x); // TODO (necessary?)
-	//map_waypoints_dy.push_back(d_y);
-	//++n_waypoints;
+	map_waypoints_x.push_back(map_waypoints_x[0]);
+	map_waypoints_y.push_back(map_waypoints_y[0]);	
+	map_waypoints_s.push_back(map_waypoints_s[n_waypoints-1] + dist);
+	//map_waypoints_dx.push_back(...); // not used
+	//map_waypoints_dy.push_back(...); // not used
+
+	S_MAX = map_waypoints_s[n_waypoints]; 
+
+	const int n_path_points = 20; // number of path points
+	const double dt = 0.02; // simulator time step size
+	const double lane_width = 4.0;
 
   //&map_interp_s, &map_interp_x, &map_interp_y
-	h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+	h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,
+							&n_path_points,&dt,&lane_width](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -376,27 +427,25 @@ int main() {
           	double car_yaw = j[1]["yaw"];
 						double car_speed = j[1]["speed"];
 						
-						car_yaw = deg2rad(car_yaw); 
+						car_yaw = deg2rad(car_yaw); // convert from deg to rad
 						car_speed = 0.44704*car_speed; // convert from mph to m/s
 
           	// Previous path data given to the Planner
-          	auto previous_path_x = j[1]["previous_path_x"];
-          	auto previous_path_y = j[1]["previous_path_y"];
+          	vector<double> previous_path_x = j[1]["previous_path_x"];
+						vector<double> previous_path_y = j[1]["previous_path_y"];
+						
           	// Previous path's end s and d values 
           	double end_path_s = j[1]["end_path_s"];
           	double end_path_d = j[1]["end_path_d"];
 
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
-						auto sensor_fusion = j[1]["sensor_fusion"];
-						
+						vector<vector<double>> sensor_fusion = j[1]["sensor_fusion"];							
 
-						const int n_path_points = 20; // number of path points
-						const double dt = 0.02; // simulator step time
-						const double lane_width = 4.0;
-
+						// vectors for storing the path to be sent to the simulator
 						vector<double> next_x_vals;
           	vector<double> next_y_vals;	
 
+						// ference state used as starting point for new path planning
 						double ref_s = car_s;
 						double ref_d = car_d;
 						double ref_x = car_x;
@@ -406,9 +455,10 @@ int main() {
 
 						int prev_size = previous_path_x.size();	
 
-						vector<double> lp_x, lp_y;					
+						// anchor points of the new spline path
+						vector<double> spl_x, spl_y;					
 						
-						// if previous path is long enough, start from its end with new path planning
+						// if previous path contains some points, start from its end with new path planning
 						if (prev_size > 3)
 						{
 							ref_s = end_path_s;
@@ -416,20 +466,19 @@ int main() {
 							ref_x = previous_path_x[prev_size-1];
 							ref_y = previous_path_y[prev_size-1];							
 
-							double dx = (double)previous_path_x[prev_size-1] - (double)previous_path_x[prev_size-2];
-							double dy = (double)previous_path_y[prev_size-1] - (double)previous_path_y[prev_size-2];
+							double dx = previous_path_x[prev_size-1] - previous_path_x[prev_size-2];
+							double dy = previous_path_y[prev_size-1] - previous_path_y[prev_size-2];
 							
 							ref_yaw = atan2(-dy,dx);	
 							ref_speed = sqrt(dx*dx + dy*dy)/dt;
 
 							auto p0 = global2vehicle(ref_x - dx, ref_y - dy, ref_x, ref_y, ref_yaw);
-							auto p1 = global2vehicle(ref_x, ref_y, ref_x, ref_y, ref_yaw);
 
-							lp_x.push_back(p0[0]);
-							lp_x.push_back(p1[0]);
+							spl_x.push_back(p0[0]);
+							spl_x.push_back(0);
 
-							lp_y.push_back(p0[1]);
-							lp_y.push_back(p1[1]);
+							spl_y.push_back(p0[1]);
+							spl_y.push_back(0);
 
 							for (int k=0; k < prev_size; ++k)
 							{
@@ -440,31 +489,24 @@ int main() {
 						else 
 						{
 							auto p0 = global2vehicle(ref_x - cos(ref_yaw), ref_y - sin(ref_yaw), ref_x, ref_y, ref_yaw);
-							auto p1 = global2vehicle(ref_x, ref_y, ref_x, ref_y, ref_yaw);
 
-							lp_x.push_back(p0[0]);
-							lp_x.push_back(p1[0]);
+							spl_x.push_back(p0[0]);
+							spl_x.push_back(0);
 
-							lp_y.push_back(p0[1]);
-							lp_y.push_back(p1[1]);
-						}
-
-						//cout << "ref_yaw = " << ref_yaw << endl;
-						//cout << "ref_x = " << ref_x << endl;
-						//cout << "ref_s = " << ref_s << ", car_s = " << car_s <<  endl;
-						//cout << "ref_speed = " << ref_speed << endl;
+							spl_y.push_back(p0[1]);
+							spl_y.push_back(0);
+						}						
 
 						//find out current ego-vehicle lane
 						const int ego_lane_index = get_lane_index(ref_d);
-
+						
+						// calculate theoretical free flow acceleration of ego vehicle
 						double acc_ego = IDM_acc(9999, ref_speed, ref_speed); 						
 
-						// handle detected traffic vehicles
+						// consider traffic objects on ego lane
 						for (auto traffic_obj : sensor_fusion)
 						{
-							int id = traffic_obj[0];
-							double px = traffic_obj[1];
-							double py = traffic_obj[2];
+							int id = traffic_obj[0];							
 							double vx = traffic_obj[3]; // in m/s
 							double vy = traffic_obj[4];
 							double s = traffic_obj[5];
@@ -474,64 +516,53 @@ int main() {
 							{
 								if (s > ref_s) //TODO: what about loop closing of the track?
 								{
-									double v_traffic = sqrt(vx*vx + vy*vy); 
-									double acc = IDM_acc(s - ref_s, ref_speed, v_traffic); 
+									double v_abs = sqrt(vx*vx + vy*vy); 
+									double acc = IDM_acc(s - car_s, ref_speed, v_abs); 
 
-									if (acc < acc_ego) acc_ego = acc;									
-									//cout << "Traffic ahead: " << s - ref_s << " m" << endl;
+									if (acc < acc_ego) 
+										acc_ego = acc;									
 								}
 							}							
 						}
 
-						//decide lane change maneuver
+						// decide if a lane change maneuver is safe and reasonable
 						int ego_target_lane = ego_lane_index;
-						if (ego_lane_index == 1) // left-most lane
+						double right_lane_acc_bias = 0.0; //0.25; // used for a bias to chaning to the right lane
+						if (ego_lane_index == 1) // left-most lane -> check lane change to middle lane
 						{
-							if(check_lane_change(ref_speed, acc_ego, 2, ref_s, sensor_fusion))
+							if(check_lane_change(ref_speed, acc_ego, 2, car_s, sensor_fusion, right_lane_acc_bias))
 								ego_target_lane = 2;
 						}
-						else if (ego_lane_index == 2) // middle lane
+						else if (ego_lane_index == 2) // middle lane -> check lane change to left and right lane
 						{
-							if(check_lane_change(ref_speed, acc_ego, 1, ref_s, sensor_fusion))
+							if(check_lane_change(ref_speed, acc_ego, 1, car_s, sensor_fusion, 0))
 								ego_target_lane = 1;
-							else if (check_lane_change(ref_speed, acc_ego, 3, ref_s, sensor_fusion))
+							else if (check_lane_change(ref_speed, acc_ego, 3, car_s, sensor_fusion, right_lane_acc_bias))
 								ego_target_lane = 3;
 						}
-						else if (ego_lane_index == 3) // right lane
+						else if (ego_lane_index == 3) // right lane -> check lane change to middle lane
 						{
-							if(check_lane_change(ref_speed, acc_ego, 2, ref_s, sensor_fusion))
+							if(check_lane_change(ref_speed, acc_ego, 2, car_s, sensor_fusion, 0))
 								ego_target_lane = 2;
 						}
-
-						//cout << "acc_ego = " << acc_ego << endl;
 						
-						//const int n_wp_behind = 2; 
-						const int n_wp_forward = 3;
-						const double spacing = 30; // m
-
-						for (int k = 1; k <= n_wp_forward; ++k)
+						// add some path spline anchor points on ego target lane 
+						const double spacing = 30.0; // m // TODO: adapt getXY function to use a spline approximation om the reference path
+						for (int k = 1; k <= 3; ++k)
 						{
 							auto xy_global = getXY(ref_s + k*spacing, (ego_target_lane-1 + 0.5)*lane_width, map_waypoints_s, map_waypoints_x, map_waypoints_y);										
-							auto lane_point = global2vehicle(xy_global[0], xy_global[1], ref_x, ref_y, ref_yaw);
-							lp_x.push_back(lane_point[0]);
-							lp_y.push_back(lane_point[1]);
-						}					
+							auto spline_point = global2vehicle(xy_global[0], xy_global[1], ref_x, ref_y, ref_yaw);
+							spl_x.push_back(spline_point[0]);
+							spl_y.push_back(spline_point[1]);
+						}								
 						
-						/*cout << "lp_x: ";
-						for(p : lp_x) cout << p << ", " ;
-						cout << endl;*/
-
+						// build spline describing the ego vehicles path
 						tk::spline path_spline;
-						path_spline.set_points(lp_x, lp_y);		
+						path_spline.set_points(spl_x, spl_y);	
 
-
-						double v_ego = ref_speed;					
-						//acc_ego = 2.0;	
-
-						//cout << "car_speed = " << car_speed << endl;
-						
-						double x_path = 0.0;
-						double y_last = 0.0;
+						// add points onto the previous path considering the created spline path
+						double v_ego = ref_speed;						
+						double x_last = 0.0, y_last = 0.0;
 
 						for(int i = next_x_vals.size(); i < n_path_points; i++)
 						{		
@@ -539,35 +570,18 @@ int main() {
 							double ds = v_ego*dt + 0.5*acc_ego*dt*dt;
 							v_ego += acc_ego*dt;
 
-							// find a point on the spline that has distance ds from the last path point							
-							// initial approximation 
-							double y_path = path_spline(x_path + ds);
-							
-							double dy = y_path - y_last;
-							double dst = sqrt(dy*dy + ds*ds);
-							double ratio = ds/dst; 
+							// find next spline-path point with distance ds from last point
+							auto next_point = walk_along_spline(path_spline, ds, x_last, y_last);																		
 
-							// improve approximation
-							x_path += ds*ratio;			
-							y_path = path_spline(x_path);																												
-
-							auto xy_global = vehicle2global(x_path, y_path, ref_x, ref_y, ref_yaw);
+							auto xy_global = vehicle2global(next_point[0], next_point[1], ref_x, ref_y, ref_yaw);
 
 							next_x_vals.push_back(xy_global[0]);
 							next_y_vals.push_back(xy_global[1]);	
 
-							y_last = y_path;								
-						}
-						
-						/*cout << "previous_path_x: ";
-						for(double p : previous_path_x) cout << p << ", " ;
-						cout << endl;
-
-						cout << "next_x_vals: ";
-						for(p : next_x_vals) cout << p << ", " ;
-						cout << endl;	*/					
-
-
+							x_last = next_point[0];	
+							y_last = next_point[1];								
+						}						
+					
 						json msgJson;
 
           	msgJson["next_x"] = next_x_vals;
@@ -576,8 +590,7 @@ int main() {
           	auto msg = "42[\"control\","+ msgJson.dump()+"]";
 
 						//this_thread::sleep_for(chrono::milliseconds(100));
-          	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-          
+          	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);          
         }
       } else {
         // Manual driving
