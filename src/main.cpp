@@ -218,13 +218,13 @@ double IDM_acc(double dist, double v_ego, double v_front)
 {
 	const double a = 3.0; // max acceleration
 	const double b = 6.0; // max deceleration
-	const double T = 0.8; // target time gap
+	const double T = 0.6; // target time gap
 	const double s0 = 7.0; // minimal allowed distance to leading vehicle
-	const double v0 = 48*0.44704; // 48 mph target velocity
+	const double v0 = 49*0.44704; // 48 mph target velocity
 
 	const double delta_v = v_ego - v_front;
 
-	const double delta = 4.0;
+	const double delta = 5.0;
 
 	double s_star = s0 + v_ego*T + v_ego*delta_v/(2.0*sqrt(a*b));
 	double acc = a*(1.0 - pow(v_ego/v0, delta) - pow(s_star/dist, 2));
@@ -261,32 +261,31 @@ bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double
 		double v_abs = sqrt(vx*vx + vy*vy); 						
 
 		if (get_lane_index(d) == target_lane)
-		{
-			// a traffic vehicle is inside the target lane safety zone -> lane change unsafe
-			double dist_on_tl = s_distance(ego_s, s);
-			if (fabs(dist_on_tl) < lon_safety_zone)						
-				return false;	
-			
-			if (s < ego_s - lon_safety_zone)  // traffic vehicle is behind safety zone
-			{						
-				double s_dist = ego_s - s;
-				if (s_dist < veh_back_dist)
-				{
-					veh_back_dist = s_dist;
-					veh_back_vel = v_abs;
-					veh_back_id = id;
-				}									
-			}			
-			else if (s > ego_s + lon_safety_zone) // traffic vehicle is in front of safety zone
+		{			
+			double dist_on_tl = s_distance(ego_s, s); // s-distance between ego and traffic vehicle 
+
+			// traffic vehicle is inside the target lane safety zone -> lane change unsafe
+			if (fabs(dist_on_tl) < lon_safety_zone) 	 				
+				return false;				
+				
+			if (dist_on_tl > 0)  // traffic vehicle is in front of safety zone
 			{
-				double s_dist = s - ego_s;
-				if (s_dist < veh_front_dist)
+				if (dist_on_tl < veh_front_dist)
 				{
-					veh_front_dist = s_dist;
+					veh_front_dist = dist_on_tl;
 					veh_front_vel = v_abs;
 					veh_front_id = id;
 				}
 			}
+			else  // traffic vehicle is behind safety zone
+			{						
+				if (dist_on_tl > veh_back_dist) // dist_on_tl is < 0
+				{
+					veh_back_dist = -dist_on_tl;
+					veh_back_vel = v_abs;
+					veh_back_id = id;
+				}									
+			}		
 		}							
 	}
 
@@ -514,10 +513,11 @@ int main() {
 
 							if (get_lane_index(d) == ego_lane_index)
 							{
-								if (s > ref_s) //TODO: what about loop closing of the track?
+								double dist = s_distance(car_s, s);
+								if (dist > 0) // traffic vehicle is in front of ego
 								{
 									double v_abs = sqrt(vx*vx + vy*vy); 
-									double acc = IDM_acc(s - car_s, ref_speed, v_abs); 
+									double acc = IDM_acc(dist, ref_speed, v_abs); 
 
 									if (acc < acc_ego) 
 										acc_ego = acc;									
