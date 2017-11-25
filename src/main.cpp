@@ -143,29 +143,61 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 // Transform from Frenet s,d coordinates to Cartesian x,y
 vector<double> getXY(double s, double d, const vector<double> &maps_s, const vector<double> &maps_x, const vector<double> &maps_y)
 {
-	int prev_wp = -1;
+	int n_wp = maps_s.size(); // n_wp = 181
 
-	while(s > maps_s[prev_wp+1] && (prev_wp < (int)(maps_s.size()-1) ))
+	// restrict s to interval [0, S_MAX]
+	while (s < 0) s += S_MAX;
+	while (s > S_MAX) s -= S_MAX;
+
+	// find previous way point  
+	int prev_wp = -1;
+	while(s > maps_s[prev_wp + 1] && (prev_wp < n_wp - 1)) 
 	{
 		prev_wp++;
 	}
 
-	int wp2 = (prev_wp+1)%maps_x.size();
+	// define rotation angle of coordinate system for spline definition
+	double dx = maps_x[(prev_wp + 1 + n_wp) % n_wp] - maps_x[prev_wp]; // +n_wp to avoid modulo with negative numbers
+	double dy = maps_y[(prev_wp + 1 + n_wp) % n_wp] - maps_y[prev_wp];
+	double theta = atan2(dy, dx);
+	double ct = cos(theta), st = sin(theta);
 
-	double heading = atan2((maps_y[wp2]-maps_y[prev_wp]),(maps_x[wp2]-maps_x[prev_wp]));
-	// the x,y,s along the segment
-	double seg_s = (s-maps_s[prev_wp]);
+	// anchor points of spline interpolation
+	vector<double> spl_x, spl_y;	
 
-	double seg_x = maps_x[prev_wp]+seg_s*cos(heading);
-	double seg_y = maps_y[prev_wp]+seg_s*sin(heading);
+	// use 2 way points behind and 2 in front of prev_wp
+	int n_anchors = 2;
+	for (int k = -n_anchors; k <= n_anchors; ++k)
+	{
+		double x_wp = maps_x[(prev_wp + k + n_wp) % n_wp]; // +n_wp to avoid modulo with negative numbers
+		double y_wp = maps_y[(prev_wp + k + n_wp) % n_wp];
 
-	double perp_heading = heading-pi()/2;
+		// add rotated waypoint to spline 
+		spl_x.push_back( ct*x_wp + st*y_wp);
+		spl_y.push_back(-st*x_wp + ct*y_wp);
+	}
 
-	double x = seg_x + d*cos(perp_heading);
-	double y = seg_y + d*sin(perp_heading);
+	// build reference path spline 
+	tk::spline ref_spline;
+	ref_spline.set_points(spl_x, spl_y);	
+
+	double s_ratio = (s - maps_s[prev_wp]) / (maps_s[prev_wp + 1] - maps_s[prev_wp]);
+
+	double x_ref = spl_x[n_anchors] + s_ratio*(spl_x[n_anchors + 1] - spl_x[n_anchors]);
+	double y_ref = ref_spline(x_ref);
+
+	//calculate orientation of reference path at x=x_ref
+	double phi = atan((ref_spline(x_ref + 0.1) - y_ref) / 0.1);
+
+	// coordinates of xy-point in spline system
+	double x_ = x_ref - d*sin(phi); 
+	double y_ = y_ref - d*cos(phi); 
+
+	// rotate back in global coordinate system
+	double x = ct*x_ - st*y_;
+	double y = st*x_ + ct*y_;	
 
 	return {x,y};
-
 }
 
 vector<double> global2vehicle(double x_global, double y_global, double car_x, double car_y, double car_yaw)
@@ -173,16 +205,16 @@ vector<double> global2vehicle(double x_global, double y_global, double car_x, do
 	double x_veh_tr = x_global - car_x;
 	double y_veh_tr = y_global - car_y;
 
-	double x_veh = cos(car_yaw)*x_veh_tr - sin(car_yaw)*y_veh_tr;
-	double y_veh = sin(car_yaw)*x_veh_tr + cos(car_yaw)*y_veh_tr;
+	double x_veh = cos(car_yaw)*x_veh_tr + sin(car_yaw)*y_veh_tr;
+	double y_veh =-sin(car_yaw)*x_veh_tr + cos(car_yaw)*y_veh_tr;
 
 	return {x_veh, y_veh};
 }
 
 vector<double> vehicle2global(double x_veh, double y_veh, double car_x, double car_y, double car_yaw)
 {
-	double x_global_tr = cos(car_yaw)*x_veh + sin(car_yaw)*y_veh;
-	double y_global_tr =-sin(car_yaw)*x_veh + cos(car_yaw)*y_veh;
+	double x_global_tr = cos(car_yaw)*x_veh - sin(car_yaw)*y_veh;
+	double y_global_tr = sin(car_yaw)*x_veh + cos(car_yaw)*y_veh;
 
 	double x_global = x_global_tr + car_x;
 	double y_global = y_global_tr + car_y;
@@ -216,15 +248,17 @@ double s_distance(double s_ego, double s_target)
 
 double IDM_acc(double dist, double v_ego, double v_front)
 {
+	//source: https://en.wikipedia.org/wiki/Intelligent_driver_model
+
 	const double a = 3.0; // max acceleration
 	const double b = 6.0; // max deceleration
-	const double T = 0.6; // target time gap
-	const double s0 = 7.0; // minimal allowed distance to leading vehicle
-	const double v0 = 49*0.44704; // 48 mph target velocity
+	const double T = 0.8; // target time gap
+	const double s0 = 6.0; // minimal allowed distance to leading vehicle
+	const double v0 = 100*0.44704; // 48 mph target velocity
 
 	const double delta_v = v_ego - v_front;
 
-	const double delta = 5.0;
+	const double delta = 4.0;
 
 	double s_star = s0 + v_ego*T + v_ego*delta_v/(2.0*sqrt(a*b));
 	double acc = a*(1.0 - pow(v_ego/v0, delta) - pow(s_star/dist, 2));
@@ -236,9 +270,9 @@ double IDM_acc(double dist, double v_ego, double v_front)
 
 bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double ego_s, vector<vector<double>> sensor_fusion, double acc_bias)
 {
-	// concept source: http://traffic-simulation.de/MOBIL.html
+	//source: http://traffic-simulation.de/MOBIL.html
 
-	const double lon_safety_zone = 10.0; 
+	const double lon_safety_zone = 8.0; 
 	const double acc_min_safe = -3.0;
 	const double p = 0.0; // 0.3 // politeness factor
 	const double acc_thresh = 0.5;
@@ -324,7 +358,7 @@ vector<double> walk_along_spline(tk::spline spl, double ds, double x_last, doubl
 	// find a point on the spline spl that has euclidean distance ds 
 	// from the spline point (x_last, y_last)
 
-	const int n_iter = 4; // TODO more iterations -> slower max speed
+	const int n_iter = 3; 
 
 	double x, y, dy, ratio, dst;
 	double dx = ds;
@@ -335,7 +369,7 @@ vector<double> walk_along_spline(tk::spline spl, double ds, double x_last, doubl
 	{		
 		dy = y - y_last;
 		dst = sqrt(dy*dy + dx*dx);
-		ratio = ds/dst; // dx/dst
+		ratio = ds/dst;
 		dx *= ratio;
 		y = spl(x_last + dx);
 	}	
@@ -385,15 +419,13 @@ int main() {
 	int n_waypoints = map_waypoints_x.size();
 	double dist = distance(map_waypoints_x[n_waypoints-1], map_waypoints_y[n_waypoints-1], map_waypoints_x[0], map_waypoints_y[0]);
 
-	map_waypoints_x.push_back(map_waypoints_x[0]);
-	map_waypoints_y.push_back(map_waypoints_y[0]);	
-	map_waypoints_s.push_back(map_waypoints_s[n_waypoints-1] + dist);
-	//map_waypoints_dx.push_back(...); // not used
-	//map_waypoints_dy.push_back(...); // not used
+	//map_waypoints_x.push_back(map_waypoints_x[0]);
+	//map_waypoints_y.push_back(map_waypoints_y[0]);	
+	//map_waypoints_s.push_back(map_waypoints_s[n_waypoints-1] + dist);
 
-	S_MAX = map_waypoints_s[n_waypoints]; 
+	S_MAX = map_waypoints_s[n_waypoints-1] + dist;
 
-	const int n_path_points = 20; // number of path points
+	const int n_path_points = 30; // number of path points
 	const double dt = 0.02; // simulator time step size
 	const double lane_width = 4.0;
 
@@ -427,7 +459,7 @@ int main() {
 						double car_speed = j[1]["speed"];
 						
 						car_yaw = deg2rad(car_yaw); // convert from deg to rad
-						car_speed = 0.44704*car_speed; // convert from mph to m/s
+						car_speed *= 0.44704; // convert from mph to m/s
 
           	// Previous path data given to the Planner
           	vector<double> previous_path_x = j[1]["previous_path_x"];
@@ -468,7 +500,7 @@ int main() {
 							double dx = previous_path_x[prev_size-1] - previous_path_x[prev_size-2];
 							double dy = previous_path_y[prev_size-1] - previous_path_y[prev_size-2];
 							
-							ref_yaw = atan2(-dy,dx);	
+							ref_yaw = atan2(dy,dx);	
 							ref_speed = sqrt(dx*dx + dy*dy)/dt;
 
 							auto p0 = global2vehicle(ref_x - dx, ref_y - dy, ref_x, ref_y, ref_yaw);
@@ -500,7 +532,7 @@ int main() {
 						const int ego_lane_index = get_lane_index(ref_d);
 						
 						// calculate theoretical free flow acceleration of ego vehicle
-						double acc_ego = IDM_acc(9999, ref_speed, ref_speed); 						
+						double acc_ego = IDM_acc(9999, ref_speed, ref_speed); 
 
 						// consider traffic objects on ego lane
 						for (auto traffic_obj : sensor_fusion)
@@ -516,11 +548,13 @@ int main() {
 								double dist = s_distance(car_s, s);
 								if (dist > 0) // traffic vehicle is in front of ego
 								{
-									double v_abs = sqrt(vx*vx + vy*vy); 
-									double acc = IDM_acc(dist, ref_speed, v_abs); 
+									double v_traffic = sqrt(vx*vx + vy*vy); 
+									double acc = IDM_acc(dist, ref_speed, v_traffic);
 
-									if (acc < acc_ego) 
-										acc_ego = acc;									
+									if (acc < acc_ego)
+									{
+										//acc_ego = acc;		
+									}								
 								}
 							}							
 						}
@@ -544,18 +578,18 @@ int main() {
 						{
 							if(check_lane_change(ref_speed, acc_ego, 2, car_s, sensor_fusion, 0))
 								ego_target_lane = 2;
-						}
+						}					
 						
 						// add some path spline anchor points on ego target lane 
-						const double spacing = 30.0; // m // TODO: adapt getXY function to use a spline approximation om the reference path
-						for (int k = 1; k <= 3; ++k)
+						const double spacing = 30.0; // in m 
+						for (int k = 1; k <= 4; ++k)
 						{
 							auto xy_global = getXY(ref_s + k*spacing, (ego_target_lane-1 + 0.5)*lane_width, map_waypoints_s, map_waypoints_x, map_waypoints_y);										
 							auto spline_point = global2vehicle(xy_global[0], xy_global[1], ref_x, ref_y, ref_yaw);
 							spl_x.push_back(spline_point[0]);
 							spl_y.push_back(spline_point[1]);
-						}								
-						
+						}					
+
 						// build spline describing the ego vehicles path
 						tk::spline path_spline;
 						path_spline.set_points(spl_x, spl_y);	
@@ -565,7 +599,7 @@ int main() {
 						double x_last = 0.0, y_last = 0.0;
 
 						for(int i = next_x_vals.size(); i < n_path_points; i++)
-						{		
+						{								
 							// ds is the distance the vehicle should cover in one timestep	
 							double ds = v_ego*dt + 0.5*acc_ego*dt*dt;
 							v_ego += acc_ego*dt;
@@ -573,14 +607,14 @@ int main() {
 							// find next spline-path point with distance ds from last point
 							auto next_point = walk_along_spline(path_spline, ds, x_last, y_last);																		
 
-							auto xy_global = vehicle2global(next_point[0], next_point[1], ref_x, ref_y, ref_yaw);
+							auto xy_global = vehicle2global(next_point[0], next_point[1], ref_x, ref_y, ref_yaw);							
 
 							next_x_vals.push_back(xy_global[0]);
-							next_y_vals.push_back(xy_global[1]);	
+							next_y_vals.push_back(xy_global[1]);								
 
 							x_last = next_point[0];	
 							y_last = next_point[1];								
-						}						
+						}	
 					
 						json msgJson;
 
@@ -589,7 +623,7 @@ int main() {
 
           	auto msg = "42[\"control\","+ msgJson.dump()+"]";
 
-						//this_thread::sleep_for(chrono::milliseconds(100));
+						this_thread::sleep_for(chrono::milliseconds(100));
           	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);          
         }
       } else {
