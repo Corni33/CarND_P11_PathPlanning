@@ -13,6 +13,8 @@ In order to have the vehicle follow a continuous and smooth path, a new path is 
 The new path is generated as a spline which is tangentially connected to the end of the vehicles previous path. 
 The other anchor points of this spline are calculated by moving firther along the desired lane in 30 m increments (see line ... of main.cpp)
 
+... getXY adapted
+
 ## Speed Control
 
 The vehicle should ideally adapt its velocity like a real human driver. 
