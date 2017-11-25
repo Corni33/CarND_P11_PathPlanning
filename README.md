@@ -19,8 +19,13 @@ The vehicle should ideally adapt its velocity like a real human driver.
 It should slow down when approaching another vehicle from behind and speed up when there is enough space and the desired target velocity is greater than the current velocity.
 All this should be done considering the vehicle's limitations: Deceleration is limited by the friction between tire and road while the forward acceleration is limited by the motor.
 
-I implemented the well known [Intelligent Driver Model](https://en.wikipedia.org/wiki/Intelligent_driver_model) (IDM) to generate acceleration values which respect the vehicle capabilites.
-Using these acceleration values I calculated the spacing of the path points which would lead to exactly this acceleration being realized by the vehicle.
+I implemented the well known [Intelligent Driver Model](https://en.wikipedia.org/wiki/Intelligent_driver_model) (IDM) to generate acceleration values which respect the vehicle capabilites (line ... of main.cpp).
+Using these acceleration values I calculated the spacing of the path points which would lead to exactly this acceleration being realized by the vehicle (line ...).
+To achieve this, I also implemented a function to "walk along a spline" until some desired distance from another spline point has been reached (line ...).
 
 ## Lane Change
+
+A lane change generally makes sense if it's both safe and reasonable. 
+I considered a lane change to be safe, if ...
+It should never impose dangerous maneuvers on other traffic participants (e.g. hard braking).   
 
