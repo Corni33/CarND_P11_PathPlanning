@@ -29,7 +29,12 @@ To achieve this, I also implemented a function to "walk along a spline" until so
 ## Lane Change
 
 Changing lanes generally makes sense if it's both safe and reasonable. 
-Both of these criteria are captured by the lane change model [MOBIL](http://traffic-simulation.de/MOBIL.html), which I implemented in my code (lines ...).
-A lange change is performed if both the deceleration imposed on following vehicles is acceptable (--> safe) and a weighted gain in acceleration potential is ... (--> reasonable)
+Both of these criteria are explicitly captured by the lane change model [MOBIL](http://traffic-simulation.de/MOBIL.html), which I implemented in my code (lines ...).
+A lange change is performed if both the deceleration imposed on following vehicles is acceptable (--> safe) and the potential gain in acceleration of the ego vehicle (weighted by a politeness factor) is big enough (--> reasonable).
+Here, the acceleration values are calculated using the IDM mentioned above, so that longitudinal control is consistent with lane change behaviour.
+
+Using the MOBIL model, the vehicle always checks adjacent lanes for a safe and reasonable lane change, which generally leads to a somewhat human like behaviour.
+Problems occur for example, when both the current lane and its adjacent lane are blocked by other vehicles, but the lane next to the adjacent lane is completely free. 
+Double lane changes are not considered by the model, which is why the vehicle sometimes gets stuck behind two slower vehicles blocking two adjacent lanes.
 
 
