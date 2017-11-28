@@ -1,7 +1,8 @@
 # Path Planning
 
 This project deals with path planning for a vehicle driving on a simulated highway. 
-The vehicle should avoid collisions with other traffic participants, adapt its speed to preceding vehicles and change lanes if it's safe and reasonable. (Note: All following statements about code lines refer to the file [main.cpp](https://github.com/Corni33/CarND_P11_PathPlanning/blob/master/src/main.cpp))
+The vehicle should avoid collisions with other traffic participants, adapt its speed to preceding vehicles and change lanes if it's safe and reasonable. 
+(Note: All references to code lines refer to the file [main.cpp](https://github.com/Corni33/CarND_P11_PathPlanning/blob/master/src/main.cpp)))
 
 ## Path Generation
 
