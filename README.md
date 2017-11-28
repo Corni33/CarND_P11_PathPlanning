@@ -1,17 +1,17 @@
 # Path Planning
 
 This project deals with path planning for a vehicle driving on a simulated highway. 
-The vehicle should avoid collisions with other traffic participants, adapt its speed to preceding vehicles and change lanes if it's safe and reasonable.
+The vehicle should avoid collisions with other traffic participants, adapt its speed to preceding vehicles and change lanes if it's safe and reasonable. (Note: All following statements about code lines refer to the file [main.cpp](https://github.com/Corni33/CarND_P11_PathPlanning/blob/master/src/main.cpp))
 
 ## Path Generation
 
 To drive the vehicle along the road, the simulator takes in a list of x-y-coordinates and moves the vehicle from one point to the next in 20 ms increments. 
 The spacing of these points therefore affects the velocity, acceleration and jerk which the vehicle experiences. 
-The vehilce's path must be planned in a "smooth" manner, to avoid exceeding comfortable or even physical limits of the vehicle.
+The vehilce's path must be planned in a "smooth" manner to avoid exceeding comfort or even physical limits of the vehicle.
 
 In order to have the vehicle follow a continuous and smooth path, a new path is always planned under consideration of the previously planned path. 
 The new path is generated as a spline which is tangentially connected to the end of the vehicles previous path. 
-The other anchor points of this spline are calculated by moving further along the desired lane in 30 m increments (see line ... of main.cpp).
+The other anchor points of this spline are calculated by moving further along the desired lane in 25 m increments (see line ... of main.cpp).
 As this is done in a frenet frame defined along the middle of the road (reference path), the coordinates of the anchor points have to be transformed back into a cartesian coordinate system.
 Because the waypoints defining the frenet frame are spaced relatively far apart, this transformation becomes choppy at the boundary between two linear pieces of the reference path.
 I therefore implemented a function that uses spline interpolation between the waypoints, to always get a smooth transformation (lines ... of main.cpp). 
