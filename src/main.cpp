@@ -285,7 +285,7 @@ bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double
 
 	const double lon_safety_zone = 12.0; // in m
 	const double acc_min_safe = -2.0;
-	const double p = 0.0; // 0.3 // politeness factor
+	const double p = 0.2; // politeness factor
 	const double acc_thresh = 0.5;
 
 	double acc_follower_tl_after_lc; // imposed acceleration of follower on target lane after lane change
@@ -584,7 +584,7 @@ int main() {
 						}					
 						
 						// add some path spline anchor points on ego target lane 
-						const double spacing = 30.0; // in m 
+						const double spacing = 25.0; // in m 
 						for (int k = 1; k <= 4; ++k)
 						{
 							auto xy_global = getXY(ref_s + k*spacing, (ego_target_lane-1 + 0.5)*lane_width, map_waypoints_s, map_waypoints_x, map_waypoints_y);										
