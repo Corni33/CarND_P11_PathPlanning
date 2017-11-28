@@ -167,6 +167,7 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 
 	// use 2 way points behind and 2 in front of prev_wp
 	int n_anchors = 2;
+
 	for (int k = -n_anchors; k <= n_anchors; ++k)
 	{
 		double x_wp = maps_x[(prev_wp + k + n_wp) % n_wp]; // +n_wp to avoid modulo with negative numbers
@@ -181,7 +182,17 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 	tk::spline ref_spline;
 	ref_spline.set_points(spl_x, spl_y);	
 
-	double s_ratio = (s - maps_s[prev_wp]) / (maps_s[prev_wp + 1] - maps_s[prev_wp]);
+	double s_dist;
+	if (prev_wp < n_wp - 1)
+	{
+		s_dist = maps_s[prev_wp + 1] - maps_s[prev_wp];
+	}
+	else
+	{
+		s_dist = S_MAX - maps_s[n_wp - 1];
+	}
+
+	double s_ratio = (s - maps_s[prev_wp]) / s_dist;
 
 	double x_ref = spl_x[n_anchors] + s_ratio*(spl_x[n_anchors + 1] - spl_x[n_anchors]);
 	double y_ref = ref_spline(x_ref);
@@ -248,13 +259,13 @@ double s_distance(double s_ego, double s_target)
 
 double IDM_acc(double dist, double v_ego, double v_front)
 {
-	//source: https://en.wikipedia.org/wiki/Intelligent_driver_model
+	// source: https://en.wikipedia.org/wiki/Intelligent_driver_model
 
 	const double a = 3.0; // max acceleration
 	const double b = 6.0; // max deceleration
 	const double T = 0.8; // target time gap
 	const double s0 = 6.0; // minimal allowed distance to leading vehicle
-	const double v0 = 100*0.44704; // 48 mph target velocity
+	const double v0 = 49*0.44704; // 49 mph target velocity
 
 	const double delta_v = v_ego - v_front;
 
@@ -270,10 +281,10 @@ double IDM_acc(double dist, double v_ego, double v_front)
 
 bool check_lane_change(double ego_speed, double ego_acc, int target_lane, double ego_s, vector<vector<double>> sensor_fusion, double acc_bias)
 {
-	//source: http://traffic-simulation.de/MOBIL.html
+	// source: http://traffic-simulation.de/MOBIL.html
 
-	const double lon_safety_zone = 8.0; 
-	const double acc_min_safe = -3.0;
+	const double lon_safety_zone = 12.0; // in m
+	const double acc_min_safe = -2.0;
 	const double p = 0.0; // 0.3 // politeness factor
 	const double acc_thresh = 0.5;
 
@@ -390,8 +401,6 @@ int main() {
 
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
-  // The max s value before wrapping around the track back to 0
-  double max_s = 6945.554;
 
   ifstream in_map_(map_file_.c_str(), ifstream::in);
 
@@ -415,15 +424,7 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
 	}	
 
-	// close waypoint loop -> first point = last point	
-	int n_waypoints = map_waypoints_x.size();
-	double dist = distance(map_waypoints_x[n_waypoints-1], map_waypoints_y[n_waypoints-1], map_waypoints_x[0], map_waypoints_y[0]);
-
-	//map_waypoints_x.push_back(map_waypoints_x[0]);
-	//map_waypoints_y.push_back(map_waypoints_y[0]);	
-	//map_waypoints_s.push_back(map_waypoints_s[n_waypoints-1] + dist);
-
-	S_MAX = map_waypoints_s[n_waypoints-1] + dist;
+	S_MAX = 6945.554;
 
 	const int n_path_points = 30; // number of path points
 	const double dt = 0.02; // simulator time step size
@@ -504,20 +505,22 @@ int main() {
 							ref_speed = sqrt(dx*dx + dy*dy)/dt;
 
 							auto p0 = global2vehicle(ref_x - dx, ref_y - dy, ref_x, ref_y, ref_yaw);
-
+							
+							// add the last two points of the previous path (in veh. coordinates) to the path spline
 							spl_x.push_back(p0[0]);
 							spl_x.push_back(0);
 
 							spl_y.push_back(p0[1]);
 							spl_y.push_back(0);
-
+							
+							// reuse the previous path
 							for (int k=0; k < prev_size; ++k)
 							{
 								next_x_vals.push_back(previous_path_x[k]);
 								next_y_vals.push_back(previous_path_y[k]);
 							}					
 						}	
-						else 
+						else // create a path from scratch
 						{
 							auto p0 = global2vehicle(ref_x - cos(ref_yaw), ref_y - sin(ref_yaw), ref_x, ref_y, ref_yaw);
 
@@ -551,9 +554,9 @@ int main() {
 									double v_traffic = sqrt(vx*vx + vy*vy); 
 									double acc = IDM_acc(dist, ref_speed, v_traffic);
 
-									if (acc < acc_ego)
+									if (acc < acc_ego) // set ego acceleration as low as necessary
 									{
-										//acc_ego = acc;		
+										acc_ego = acc; 
 									}								
 								}
 							}							
@@ -590,14 +593,14 @@ int main() {
 							spl_y.push_back(spline_point[1]);
 						}					
 
-						// build spline describing the ego vehicles path
+						// build path spline 
 						tk::spline path_spline;
 						path_spline.set_points(spl_x, spl_y);	
-
-						// add points onto the previous path considering the created spline path
+						
 						double v_ego = ref_speed;						
 						double x_last = 0.0, y_last = 0.0;
 
+						// add points onto the previous path considering the created spline path
 						for(int i = next_x_vals.size(); i < n_path_points; i++)
 						{								
 							// ds is the distance the vehicle should cover in one timestep	
